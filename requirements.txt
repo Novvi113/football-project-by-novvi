@@ -4,3 +4,5 @@ mplsoccer
 matplotlib
 pandas
 seaborn
+numpy
+requests
