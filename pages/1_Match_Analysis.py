@@ -24,7 +24,6 @@ import matplotlib.patches as patches
 from PIL import Image
 from matplotlib import colors as mcolors
 
-wtaimaged = Image.open("wtatransnew.png")
 st.set_page_config(page_title="WT Analysis - Match Visuals", layout="wide")
 st.title("WT Analysis - Match Visuals")
 schedule_df = pd.DataFrame()
