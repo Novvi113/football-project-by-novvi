@@ -2,206 +2,126 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from mplsoccer import PyPizza
-from matplotlib.font_manager import FontProperties
-from utils.data import get_competitions, get_matches, get_events
+from mplsoccer import PyPizza # Это библиотека для тех самых "Пицца-чартов"
 
-st.set_page_config(page_title="Elite Profile", layout="wide")
-
-# --- CSS ДЛЯ КРАСОТЫ ---
-st.markdown("""
-<style>
-    .stApp { background-color: #121212; }
-    h1, h2, h3 { color: #ffffff !important; font-family: 'Roboto', sans-serif; }
-    .stat-box { background-color: #1e1e1e; padding: 10px; border-radius: 5px; border: 1px solid #333; }
-    .stat-value { font-size: 24px; font-weight: bold; color: #E63946; }
-    .stat-label { font-size: 12px; color: #aaaaaa; }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🛡️ ELITE PLAYER PROFILE")
-
-# --- 1. ЗАГРУЗКА ДАННЫХ ---
-st.sidebar.header("Scouting Settings")
-comps = get_competitions()
-comp_name = st.sidebar.selectbox("Competition", comps['competition_name'].unique())
-comp_id = comps[comps['competition_name'] == comp_name]['competition_id'].values[0]
-
-seasons = comps[comps['competition_name'] == comp_name]
-season_name = st.sidebar.selectbox("Season", seasons['season_name'].unique())
-season_id = seasons[seasons['season_name'] == season_name]['season_id'].values[0]
-
-matches = get_matches(comp_id, season_id)
-# Фильтр матча не нужен для "сезонной" статистики, но мы берем матч для примера или агрегации
-match_list = matches['home_team'] + " vs " + matches['away_team']
-selected_match = st.sidebar.selectbox("Select Match (creates profile for players in this game)", match_list)
-match_id = matches[match_list == selected_match]['match_id'].values[0]
-
-with st.spinner('Scraping advanced data...'):
-    events = get_events(match_id)
-
-# --- 2. РАСЧЕТ МЕТРИК (КАК НА ФОТО) ---
-def calculate_elite_stats(player_name, df):
-    p_df = df[df['player'] == player_name].copy()
-    if p_df.empty: return [0]*15
-
-    # 1. Shots
-    shots = len(p_df[p_df['type'] == 'Shot'])
+# --- 1. ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ---
+@st.cache_data
+def load_and_prep_data():
+    # Замените на вашу ссылку с Hugging Face
+    url = "https://huggingface.co/datasets/fadhilra101/xg-thesis/resolve/main/data/data_karyajasa.csv" # Пример (проверьте точный URL файла)
     
-    # 2. Non-penalty Goals
-    np_goals = len(p_df[(p_df['shot_outcome'] == 'Goal') & (p_df['shot_type'] != 'Penalty')])
-    
-    # 3. Non-penalty xG
-    npxg = p_df[p_df['shot_type'] != 'Penalty']['shot_statsbomb_xg'].sum() if 'shot_statsbomb_xg' in p_df.columns else 0
-    
-    # 4. Passes into Final Third
-    # Логика: пас начался до 80м, закончился после 80м
-    passes = p_df[p_df['type'] == 'Pass']
-    completed = passes[passes['pass_outcome'].isna()]
-    final_third_passes = 0
-    if not completed.empty and 'pass_end_location' in completed.columns:
-        final_third_passes = len(completed[completed.apply(lambda x: x['x'] < 80 and x['pass_end_location'][0] >= 80 if isinstance(x['pass_end_location'], list) else False, axis=1)])
-    
-    # 5. Passes into Box
-    box_passes = 0
-    if not completed.empty:
-        box_passes = len(completed[completed['pass_end_location'].apply(lambda x: x[0] >= 102 and 18 <= x[1] <= 62 if isinstance(x, list) else False)])
-    
-    # 6. xA (Expected Assists)
-    xa = p_df['pass_shot_assist'].sum() if 'pass_shot_assist' in p_df.columns else 0
-    
-    # 7. SCA (Shot Creating Actions)
-    sca = len(p_df.get('pass_shot_assist', pd.Series(0)) == True) + \
-          len(p_df[(p_df['type'] == 'Dribble') & (p_df['dribble_outcome'] == 'Complete')])
-          
-    # 8. Successful Dribbles
-    dribbles = len(p_df[(p_df['type'] == 'Dribble') & (p_df['dribble_outcome'] == 'Complete')])
-    
-    # 9. Dribble Success %
-    total_dribbles = len(p_df[p_df['type'] == 'Dribble'])
-    dribble_pct = (dribbles / total_dribbles * 100) if total_dribbles > 0 else 0
-    
-    # 10. Carries into Final Third
-    carries = p_df[p_df['type'] == 'Carry']
-    carries_ft = 0
-    if not carries.empty and 'carry_end_location' in carries.columns:
-        carries_ft = len(carries[carries.apply(lambda x: x['x'] < 80 and x['carry_end_location'][0] >= 80 if isinstance(x['carry_end_location'], list) else False, axis=1)])
+    # Если ссылка не работает, создадим фейковые данные для теста
+    try:
+        df = pd.read_csv(url)
+    except:
+        # Фейковые данные, если файл не подгрузился
+        data = {
+            'player_name': ['Mbappe', 'Haaland', 'Mbappe', 'Haaland', 'Messi', 'Messi', 'Ronaldo'],
+            'result': ['Goal', 'Goal', 'Saved', 'Goal', 'Goal', 'Miss', 'Goal'],
+            'xg': [0.4, 0.6, 0.1, 0.8, 0.3, 0.05, 0.75]
+        }
+        df = pd.DataFrame(data)
+        # Добавим колонку is_goal для подсчета
+        df['is_goal'] = df['result'].apply(lambda x: 1 if x == 'Goal' else 0)
 
-    # 11. Carries into Box
-    carries_box = 0
-    if not carries.empty:
-        carries_box = len(carries[carries['carry_end_location'].apply(lambda x: x[0] >= 102 and 18 <= x[1] <= 62 if isinstance(x, list) else False)])
-        
-    # 12. Progressive Passes Received
-    # Это сложно без контекста всех пасов, возьмем Ball Receipt в финальной трети
-    prog_rec = len(p_df[(p_df['type'] == 'Ball Receipt*') & (p_df['x'] > 80)])
+    # ВАЖНО: Превращаем "события" в "статистику игрока"
+    # Группируем по имени игрока
+    player_stats = df.groupby('player_name').agg({
+        'xg': ['sum', 'mean', 'count'], # Сумма xG, средний xG, кол-во ударов
+        'result': lambda x: (x == 'Goal').sum() # Сумма голов
+    }).reset_index()
+
+    # Убираем мульти-индекс колонок
+    player_stats.columns = ['Player', 'Total_xG', 'xG_per_Shot', 'Shots', 'Goals']
     
-    # 13. Progressions (Passes + Carries into FT)
-    progressions = final_third_passes + carries_ft
+    # Добавляем метрику "Финишинг" (Голы минус xG)
+    player_stats['G_minus_xG'] = player_stats['Goals'] - player_stats['Total_xG']
     
-    # 14. Pressures (PAdj сложно, берем просто Pressures)
-    pressures = len(p_df[p_df['type'] == 'Pressure'])
+    # Оставляем только тех, у кого больше 2 ударов (чтобы отсеять шум)
+    player_stats = player_stats[player_stats['Shots'] > 2]
     
-    # 15. Turnovers (Dispossessed + Miscontrols)
-    turnovers = len(p_df[p_df['type'].isin(['Dispossessed', 'Miscontrol'])])
+    return player_stats
 
-    return [shots, np_goals, round(npxg, 2), final_third_passes, box_passes, round(xa, 2), sca, 
-            dribbles, round(dribble_pct, 1), carries_ft, carries_box, prog_rec, progressions, pressures, turnovers]
+df_stats = load_and_prep_data()
 
-# Параметры как на фото
-params = [
-    "Shots", "Non-penalty goals", "npxG", "Passes into final third", "Passes into box", "xA", "Shot-creating actions",
-    "Successful dribbles", "Dribble Success %", "Carries into final third", "Carries into box", "Prog. passes received",
-    "Progressions", "Pressures", "Turnovers"
-]
+# --- 2. ИНТЕРФЕЙС ---
+st.title("⚔️ Player Comparison (Radar)")
 
-# --- 3. ИНТЕРФЕЙС ---
-all_players = sorted(events['player'].dropna().unique())
-player = st.selectbox("Select Player", all_players)
+col1, col2 = st.columns(2)
 
-values = calculate_elite_stats(player, events)
+# Выбор игроков
+players_list = df_stats['Player'].unique().tolist()
+player1 = col1.selectbox("Выберите Игрока 1", players_list, index=0)
+# Пытаемся выбрать второго игрока автоматически, если он есть
+idx_2 = 1 if len(players_list) > 1 else 0
+player2 = col2.selectbox("Выберите Игрока 2", players_list, index=idx_2)
 
-# ЭТАЛОНЫ (Для расчета "процентилей" на глаз)
-# Мы берем эти цифры как "100-й перцентиль" для одного матча.
-# Для сезона цифры были бы другими (в среднем за 90 мин).
-max_ranges = [
-    6, 2, 1.5, 10, 5, 1.0, 10,
-    8, 100, 8, 5, 15,
-    15, 30, 8
-]
-# Для Turnovers чем МЕНЬШЕ, тем ЛУЧШЕ, поэтому инвертируем логику визуально в голове
-# Но PyPizza требует min/max.
+# --- 3. ПОСТРОЕНИЕ ГРАФИКА (PYPIZZA) ---
 
-# --- 4. VISUALIZATION (Split Columns) ---
-col_graph, col_table = st.columns([2, 1])
+if player1 and player2:
+    # Получаем данные для выбранных игроков
+    p1_data = df_stats[df_stats['Player'] == player1].iloc[0]
+    p2_data = df_stats[df_stats['Player'] == player2].iloc[0]
 
-with col_graph:
-    # Шрифты
-    font_normal = FontProperties(family='sans-serif', weight='normal')
-    font_bold = FontProperties(family='sans-serif', weight='bold')
-
-    # Цвета (Как на фото: Красный, Темный фон)
-    slice_colors = ["#D70232"] * 7 + ["#D70232"] * 6 + ["#1A1A1A"] * 2 # Последние 2 темнее (или другой цвет)
-    # На фото Turnovers - это "плохо", выделим черным
-    slice_colors[-1] = "#1A1A1A" # Turnover
-    slice_colors[-2] = "#D70232" # Pressure
+    # Параметры для сравнения
+    params = ["Goals", "Total_xG", "Shots", "xG_per_Shot", "G_minus_xG"]
     
-    text_colors = ["#F2F2F2"] * 15
+    # Значения
+    values_p1 = [p1_data[p] for p in params]
+    values_p2 = [p2_data[p] for p in params]
 
-    # Создаем Пиццу
+    # РАСЧЕТ МИНИМУМОВ И МАКСИМУМОВ (ДЛЯ НОРМАЛИЗАЦИИ)
+    # Чтобы график был честным, нужно знать границы (минимум и максимум по всей лиге)
+    min_range = [df_stats[p].min() for p in params]
+    max_range = [df_stats[p].max() for p in params]
+
+    # Создаем объект PyPizza
+    # Это настройки цветов и стиля как в крутых приложениях
     baker = PyPizza(
-        params=params,
-        min_range=[0]*15,
-        max_range=max_ranges,
-        background_color="#121212", # Темный фон
-        straight_line_color="#333333", # Линии сетки
-        last_circle_lw=1,
+        params=params,                  # Названия метрик
+        min_range=min_range,            # Минимальные значения в лиге
+        max_range=max_range,            # Максимальные значения в лиге
+        background_color="#0E1117",     # Темный фон (под Streamlit)
+        straight_line_color="#0E1117",  
+        last_circle_lw=1,               # Толщина линий
         other_circle_lw=1,
-        inner_circle_size=20
+        inner_circle_size=20            # Размер дырки в центре
     )
 
+    # Рисуем график
     fig, ax = baker.make_pizza(
-        values,
-        figsize=(8, 8),
-        color_blank_space="same",
-        slice_colors=slice_colors,
-        value_colors=text_colors,
-        value_bck_colors=slice_colors,
-        blank_alpha=0.2, # Прозрачность незаполненного
-        kwargs_slices=dict(edgecolor="#121212", zorder=2, linewidth=2), # Разделители
-        kwargs_params=dict(color="#aaaaaa", fontsize=9, fontproperties=font_normal, va="center"),
-        kwargs_values=dict(color="#ffffff", fontsize=11, fontproperties=font_bold, zorder=3,
-                           bbox=dict(edgecolor="#D70232", facecolor="#D70232", boxstyle="round,pad=0.2", lw=1))
+        values_p1,                     # Значения игрока 1
+        compare_values=values_p2,      # Значения игрока 2 (для сравнения)
+        figsize=(8, 8),                # Размер картинки
+        color_blank_space="same",      # Заливка пустоты
+        slice_colors=["#1A78CF"] * 5,  # Цвет игрока 1 (Синий)
+        blank_alpha=0.4,
+        
+        # Настройки подписей
+        kwargs_slices=dict(edgecolor="#0E1117", zorder=2, linewidth=1),
+        kwargs_compare=dict(facecolor="#FF9300", edgecolor="#0E1117", zorder=2, linewidth=1, alpha=0.7), # Цвет игрока 2 (Оранжевый)
+        kwargs_params=dict(color="#F2F2F2", fontsize=12, va="center"), # Цвет текста параметров
+        kwargs_values=dict(color="#F2F2F2", fontsize=11, zorder=3, 
+                           bbox=dict(edgecolor="#0E1117", facecolor="cornflowerblue", boxstyle="round,pad=0.2", lw=1))
     )
     
-    # Тексты
-    fig.text(0.515, 0.97, f"{player}", size=24, ha="center", fontproperties=font_bold, color="#ffffff")
-    fig.text(0.515, 0.93, f"{selected_match}", size=12, ha="center", fontproperties=font_normal, color="#aaaaaa")
+    # Добавляем легенду и заголовки вручную, так как mplsoccer рисует на Matplotlib
+    fig.text(0.515, 0.975, f"{player1} vs {player2}", size=20, ha="center", color="#F2F2F2")
     
+    # Легенда цветов
+    fig.text(0.25, 0.93, f"🟦 {player1}", size=14, color="#1A78CF", ha="center")
+    fig.text(0.75, 0.93, f"🟧 {player2}", size=14, color="#FF9300", ha="center")
+
+    # Устанавливаем цвет фона для всей фигуры
+    fig.set_facecolor('#0E1117')
+
+    # Выводим в Streamlit
     st.pyplot(fig)
 
-with col_table:
-    st.markdown("### 📊 Player Stats")
-    st.markdown("<div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px;'>", unsafe_allow_html=True)
-    
-    # Создаем красивую таблицу вручную
-    for i in range(len(params)):
-        # Считаем "виртуальный процентиль" (просто % заполнения от максимума)
-        percentile = int((values[i] / max_ranges[i]) * 100)
-        if percentile > 99: percentile = 99
-        
-        # Цвет процентиля
-        p_color = "#D70232" if percentile > 70 else "#aaaaaa"
-        
-        st.markdown(f"""
-        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding: 8px 0;">
-            <span style="color: #ddd; font-size: 14px;">{i+1}: {params[i]}</span>
-            <div style="text-align: right;">
-                <span style="color: #fff; font-weight: bold; font-size: 16px;">{values[i]}</span>
-                <span style="color: {p_color}; font-size: 12px; margin-left: 5px;">({percentile})</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.caption("Data: StatsBomb Open Data. Percentiles are simulated based on match maximums.")
+    # --- 4. ТАБЛИЦА ДЛЯ ДЕТАЛЕЙ ---
+    st.markdown("### 📊 Детальные цифры")
+    comparison_df = pd.DataFrame([p1_data, p2_data])
+    st.dataframe(comparison_df.set_index('Player'), use_container_width=True)
+
+else:
+    st.warning("Выберите игроков для сравнения")
