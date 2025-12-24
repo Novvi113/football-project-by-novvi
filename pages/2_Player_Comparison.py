@@ -2,126 +2,170 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from mplsoccer import PyPizza # Это библиотека для тех самых "Пицца-чартов"
+from mplsoccer import Pitch, VerticalPitch, PyPizza
 
-# --- 1. ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ---
+# ==========================================
+# ⚙️ НАСТРОЙКИ (КОНФИГУРАЦИЯ)
+# ==========================================
+# Если в твоем файле другие названия колонок, поменяй их здесь!
+DATA_URL = "https://huggingface.co/datasets/fadhilra101/xg-thesis/resolve/main/data/data_karyajasa.csv" # Пример прямой ссылки
+
+COLS = {
+    "player": "player_name",  # Как называется колонка с именем игрока
+    "team": "team_name",      # Команда
+    "x": "x",                 # Координата X (обычно 0-100 или 0-120)
+    "y": "y",                 # Координата Y
+    "xg": "xg",               # Значение xG
+    "result": "result",       # Результат (Goal, Miss, Saved)
+    "is_goal_value": "Goal"   # Как в колонке result обозначен гол?
+}
+
+# Настройка страницы
+st.set_page_config(page_title="Scout Master Pro", page_icon="⚽", layout="wide")
+st.markdown("<style>.stApp {background-color: #0E1117; color: white;}</style>", unsafe_allow_html=True)
+
+# ==========================================
+# 📥 ЗАГРУЗКА ДАННЫХ
+# ==========================================
 @st.cache_data
-def load_and_prep_data():
-    # Замените на вашу ссылку с Hugging Face
-    url = "https://huggingface.co/datasets/fadhilra101/xg-thesis/resolve/main/data/data_karyajasa.csv" # Пример (проверьте точный URL файла)
-    
-    # Если ссылка не работает, создадим фейковые данные для теста
+def load_data(url):
     try:
+        # Пытаемся загрузить данные
         df = pd.read_csv(url)
-    except:
-        # Фейковые данные, если файл не подгрузился
-        data = {
-            'player_name': ['Mbappe', 'Haaland', 'Mbappe', 'Haaland', 'Messi', 'Messi', 'Ronaldo'],
-            'result': ['Goal', 'Goal', 'Saved', 'Goal', 'Goal', 'Miss', 'Goal'],
-            'xg': [0.4, 0.6, 0.1, 0.8, 0.3, 0.05, 0.75]
-        }
-        df = pd.DataFrame(data)
-        # Добавим колонку is_goal для подсчета
-        df['is_goal'] = df['result'].apply(lambda x: 1 if x == 'Goal' else 0)
+        # Если координаты в формате StatsBomb (120x80), а нам нужно 100x100, можно нормализовать здесь
+        # Но пока оставим как есть.
+        return df
+    except Exception as e:
+        st.error(f"Ошибка загрузки данных: {e}")
+        return pd.DataFrame()
 
-    # ВАЖНО: Превращаем "события" в "статистику игрока"
-    # Группируем по имени игрока
-    player_stats = df.groupby('player_name').agg({
-        'xg': ['sum', 'mean', 'count'], # Сумма xG, средний xG, кол-во ударов
-        'result': lambda x: (x == 'Goal').sum() # Сумма голов
-    }).reset_index()
+# Боковая панель для загрузки своего файла (если ссылка не сработает)
+st.sidebar.title("🎛 Панель управления")
+user_url = st.sidebar.text_input("Вставь ссылку на CSV (или оставь пустой)", "")
+actual_url = user_url if user_url else DATA_URL
 
-    # Убираем мульти-индекс колонок
-    player_stats.columns = ['Player', 'Total_xG', 'xG_per_Shot', 'Shots', 'Goals']
-    
-    # Добавляем метрику "Финишинг" (Голы минус xG)
-    player_stats['G_minus_xG'] = player_stats['Goals'] - player_stats['Total_xG']
-    
-    # Оставляем только тех, у кого больше 2 ударов (чтобы отсеять шум)
-    player_stats = player_stats[player_stats['Shots'] > 2]
-    
-    return player_stats
+df = load_data(actual_url)
 
-df_stats = load_and_prep_data()
+if df.empty:
+    st.warning("⏳ Ожидание данных... Вставьте прямую ссылку на .csv файл в меню слева.")
+    st.info("Пример ссылки: https://raw.githubusercontent.com/user/repo/main/data.csv")
+    st.stop() # Останавливаем выполнение, пока нет данных
 
-# --- 2. ИНТЕРФЕЙС ---
-st.title("⚔️ Player Comparison (Radar)")
+# ==========================================
+# 🧠 ОБРАБОТКА ДАННЫХ
+# ==========================================
+# Создаем колонку 'is_goal' (1 если гол, 0 если нет) для удобства
+df['is_goal'] = df[COLS['result']].apply(lambda x: 1 if x == COLS['is_goal_value'] else 0)
 
-col1, col2 = st.columns(2)
+# Фильтры
+teams = sorted(df[COLS['team']].unique())
+selected_team = st.sidebar.selectbox("Выберите команду", teams)
 
-# Выбор игроков
-players_list = df_stats['Player'].unique().tolist()
-player1 = col1.selectbox("Выберите Игрока 1", players_list, index=0)
-# Пытаемся выбрать второго игрока автоматически, если он есть
-idx_2 = 1 if len(players_list) > 1 else 0
-player2 = col2.selectbox("Выберите Игрока 2", players_list, index=idx_2)
+team_data = df[df[COLS['team']] == selected_team]
+players = sorted(team_data[COLS['player']].unique())
+selected_player = st.sidebar.selectbox("Выберите игрока", players)
 
-# --- 3. ПОСТРОЕНИЕ ГРАФИКА (PYPIZZA) ---
+# ==========================================
+# 📊 ВИЗУАЛИЗАЦИЯ 1: ПРОФИЛЬ ИГРОКА (KPI)
+# ==========================================
+st.title(f"📊 Анализ: {selected_player}")
 
-if player1 and player2:
-    # Получаем данные для выбранных игроков
-    p1_data = df_stats[df_stats['Player'] == player1].iloc[0]
-    p2_data = df_stats[df_stats['Player'] == player2].iloc[0]
+# Считаем статистику
+p_data = df[df[COLS['player']] == selected_player]
+total_goals = p_data['is_goal'].sum()
+total_xg = p_data[COLS['xg']].sum()
+total_shots = len(p_data)
+xg_per_shot = total_xg / total_shots if total_shots > 0 else 0
 
-    # Параметры для сравнения
-    params = ["Goals", "Total_xG", "Shots", "xG_per_Shot", "G_minus_xG"]
-    
-    # Значения
-    values_p1 = [p1_data[p] for p in params]
-    values_p2 = [p2_data[p] for p in params]
+# Красивые метрики в ряд
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Голы", total_goals)
+col2.metric("Total xG", f"{total_xg:.2f}")
+col3.metric("Разница (Goals - xG)", f"{total_goals - total_xg:.2f}", 
+            delta_color="normal" if total_goals >= total_xg else "inverse")
+col4.metric("xG на удар", f"{xg_per_shot:.2f}")
 
-    # РАСЧЕТ МИНИМУМОВ И МАКСИМУМОВ (ДЛЯ НОРМАЛИЗАЦИИ)
-    # Чтобы график был честным, нужно знать границы (минимум и максимум по всей лиге)
-    min_range = [df_stats[p].min() for p in params]
-    max_range = [df_stats[p].max() for p in params]
+# ==========================================
+# ⚽ ВИЗУАЛИЗАЦИЯ 2: КАРТА УДАРОВ (MPLSOCCER)
+# ==========================================
+st.subheader("📍 Карта ударов (Shot Map)")
 
-    # Создаем объект PyPizza
-    # Это настройки цветов и стиля как в крутых приложениях
-    baker = PyPizza(
-        params=params,                  # Названия метрик
-        min_range=min_range,            # Минимальные значения в лиге
-        max_range=max_range,            # Максимальные значения в лиге
-        background_color="#0E1117",     # Темный фон (под Streamlit)
-        straight_line_color="#0E1117",  
-        last_circle_lw=1,               # Толщина линий
-        other_circle_lw=1,
-        inner_circle_size=20            # Размер дырки в центре
-    )
+col_viz1, col_viz2 = st.columns([2, 1])
 
-    # Рисуем график
-    fig, ax = baker.make_pizza(
-        values_p1,                     # Значения игрока 1
-        compare_values=values_p2,      # Значения игрока 2 (для сравнения)
-        figsize=(8, 8),                # Размер картинки
-        color_blank_space="same",      # Заливка пустоты
-        slice_colors=["#1A78CF"] * 5,  # Цвет игрока 1 (Синий)
-        blank_alpha=0.4,
-        
-        # Настройки подписей
-        kwargs_slices=dict(edgecolor="#0E1117", zorder=2, linewidth=1),
-        kwargs_compare=dict(facecolor="#FF9300", edgecolor="#0E1117", zorder=2, linewidth=1, alpha=0.7), # Цвет игрока 2 (Оранжевый)
-        kwargs_params=dict(color="#F2F2F2", fontsize=12, va="center"), # Цвет текста параметров
-        kwargs_values=dict(color="#F2F2F2", fontsize=11, zorder=3, 
-                           bbox=dict(edgecolor="#0E1117", facecolor="cornflowerblue", boxstyle="round,pad=0.2", lw=1))
-    )
-    
-    # Добавляем легенду и заголовки вручную, так как mplsoccer рисует на Matplotlib
-    fig.text(0.515, 0.975, f"{player1} vs {player2}", size=20, ha="center", color="#F2F2F2")
-    
-    # Легенда цветов
-    fig.text(0.25, 0.93, f"🟦 {player1}", size=14, color="#1A78CF", ha="center")
-    fig.text(0.75, 0.93, f"🟧 {player2}", size=14, color="#FF9300", ha="center")
+with col_viz1:
+    # Создаем футбольное поле
+    pitch = Pitch(pitch_type='statsbomb', pitch_color='#0E1117', line_color='#c7d5cc')
+    fig, ax = pitch.draw(figsize=(10, 7))
 
-    # Устанавливаем цвет фона для всей фигуры
-    fig.set_facecolor('#0E1117')
+    # Рисуем промахи/сейвы (полупрозрачные)
+    no_goals = p_data[p_data['is_goal'] == 0]
+    pitch.scatter(no_goals[COLS['x']], no_goals[COLS['y']],
+                  s=(no_goals[COLS['xg']] * 700) + 50, # Размер зависит от xG
+                  edgecolors='#606060', c='None', hatch='///', marker='o', 
+                  alpha=0.6, ax=ax, label='Промах/Сейв')
 
-    # Выводим в Streamlit
+    # Рисуем голы (яркие)
+    goals = p_data[p_data['is_goal'] == 1]
+    pitch.scatter(goals[COLS['x']], goals[COLS['y']],
+                  s=(goals[COLS['xg']] * 700) + 50,
+                  edgecolors='white', c='#d62728', marker='football', 
+                  ax=ax, label='ГОЛ')
+
+    # Легенда
+    ax.legend(facecolor='#0E1117', edgecolor='white', labelcolor='white', loc='lower left')
     st.pyplot(fig)
 
-    # --- 4. ТАБЛИЦА ДЛЯ ДЕТАЛЕЙ ---
-    st.markdown("### 📊 Детальные цифры")
-    comparison_df = pd.DataFrame([p1_data, p2_data])
-    st.dataframe(comparison_df.set_index('Player'), use_container_width=True)
+with col_viz2:
+    st.write("### Описание")
+    st.write("""
+    - **Красный мяч**: Гол
+    - **Круг**: Удар без гола
+    - **Размер круга**: Чем больше круг, тем выше xG (опасность момента).
+    """)
+    st.write("Последние 5 ударов:")
+    st.dataframe(p_data[[COLS['result'], COLS['xg'], COLS['x'], COLS['y']]].tail(5))
 
-else:
-    st.warning("Выберите игроков для сравнения")
+# ==========================================
+# 🕸 ВИЗУАЛИЗАЦИЯ 3: РАДАР (PYPIZZA)
+# ==========================================
+st.subheader("⚔️ Сравнение с лигой (Radar)")
+
+# Подготовка данных для радара
+# Считаем средние показатели по всем игрокам в датасете (у кого > 5 ударов)
+all_stats = df.groupby(COLS['player']).agg({
+    COLS['xg']: 'sum',
+    'is_goal': 'sum',
+    COLS['result']: 'count' # кол-во ударов
+}).rename(columns={COLS['result']: 'shots'})
+all_stats = all_stats[all_stats['shots'] > 5] # Отсекаем тех, кто сыграл мало
+
+# Параметры для радара
+params = ["Голы", "xG", "Удары", "xG/Удар"]
+# Значения выбранного игрока
+player_vals = [total_goals, total_xg, total_shots, xg_per_shot]
+
+# Минимум и максимум по лиге (для шкал)
+min_vals = [all_stats['is_goal'].min(), all_stats[COLS['xg']].min(), all_stats['shots'].min(), (all_stats[COLS['xg']]/all_stats['shots']).min()]
+max_vals = [all_stats['is_goal'].max(), all_stats[COLS['xg']].max(), all_stats['shots'].max(), (all_stats[COLS['xg']]/all_stats['shots']).max()]
+
+# Рисуем пиццу
+baker = PyPizza(
+    params=params,
+    min_range=min_vals, max_range=max_vals,
+    background_color="#0E1117", straight_line_color="#0E1117",
+    last_circle_lw=0, other_circle_lw=0,
+)
+
+fig_pizza, ax_pizza = baker.make_pizza(
+    player_vals,
+    figsize=(6, 6),
+    color_blank_space="same",
+    slice_colors=["#1A78CF"] * 4,
+    value_colors=["white"] * 4,
+    value_bck_colors=["#1A78CF"] * 4,
+    kwargs_slices=dict(edgecolor="#0E1117", zorder=2, linewidth=1),
+    kwargs_params=dict(color="white", fontsize=12),
+    kwargs_values=dict(color="white", fontsize=10, zorder=3, bbox=dict(edgecolor="#0E1117", facecolor="#1A78CF", boxstyle="round,pad=0.2", lw=1))
+)
+fig_pizza.set_facecolor('#0E1117')
+st.pyplot(fig_pizza)
