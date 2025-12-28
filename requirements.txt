@@ -3,6 +3,7 @@ pandas
 numpy
 matplotlib
 mplsoccer
-pyarrow
-fastparquet
+scipy
 requests
+openpyxl
+Pillow
